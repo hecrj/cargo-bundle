@@ -71,22 +71,26 @@ pub fn bundle_project(settings: &bundle::Settings) -> Result<Vec<PathBuf>, Error
     let msi_name = format!("{}.msi", settings.bundle_name());
     terminal::print_bundling(&msi_name)?;
 
+    terminal::print_progress("Package", "Creating empty package...")?;
     let base_dir = settings.project_out_directory().join("bundle/msi");
     let msi_path = base_dir.join(&msi_name);
     let mut package = new_empty_package(&msi_path)?;
 
     // Generate package metadata:
+    terminal::print_progress("Package", "Generating package metadata...")?;
     let guid = generate_package_guid(settings);
     set_summary_info(&mut package, guid, settings);
     create_property_table(&mut package, guid, settings)?;
 
     // Copy resource files into package:
+    terminal::print_progress("Package", "Copying resources files into package...")?;
     let mut resources = collect_resource_info(settings)?;
     let directories = collect_directory_info(settings, &mut resources)?;
     let cabinets = divide_resources_into_cabinets(resources);
     generate_resource_cabinets(&mut package, &cabinets)?;
 
     // Set up installer database tables:
+    terminal::print_progress("Package", "Setting up installer database tables...")?;
     create_directory_table(&mut package, &directories)?;
     create_feature_table(&mut package, settings)?;
     create_component_table(&mut package, guid, &directories)?;
@@ -103,6 +107,7 @@ pub fn bundle_project(settings: &bundle::Settings) -> Result<Vec<PathBuf>, Error
     // TODO: Create other needed tables.
 
     // Create app icon:
+    terminal::print_progress("Package", "Creating app icon...")?;
     package.create_table(
         "Icon",
         vec![

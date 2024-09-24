@@ -35,7 +35,7 @@ fn safe_term_attr<T: term::Terminal + ?Sized>(
     }
 }
 
-fn print_progress(step: &str, msg: &str) -> Result<(), Error> {
+pub fn print_progress(step: &str, msg: &str) -> Result<(), Error> {
     if let Some(mut output) = term::stderr() {
         safe_term_attr(&mut output, term::Attr::Bold)?;
         output.fg(term::color::GREEN)?;
