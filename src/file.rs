@@ -123,6 +123,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn copy_dir_with_symlinks() {
         // Create a directory structure that looks like this:
         //   ${TMP}/orig/
