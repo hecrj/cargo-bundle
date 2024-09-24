@@ -1,5 +1,4 @@
 use crate::bundle;
-use crate::file;
 use crate::terminal;
 use crate::Error;
 
@@ -240,22 +239,6 @@ fn collect_resource_info(settings: &bundle::Settings) -> Result<Vec<ResourceInfo
         size: settings.binary_path().metadata()?.len(),
         component_key: String::new(),
     });
-    let root_rsrc_dir = PathBuf::from("Resources");
-    for source_path in settings.resource_files() {
-        let source_path = source_path?;
-        let metadata = source_path.metadata()?;
-        let size = metadata.len();
-        let dest_path = root_rsrc_dir.join(file::resource_relpath(&source_path));
-        let filename = dest_path.file_name().unwrap().to_string_lossy().to_string();
-        let info = ResourceInfo {
-            source_path,
-            dest_path,
-            filename,
-            size,
-            component_key: String::new(),
-        };
-        resources.push(info);
-    }
     Ok(resources)
 }
 

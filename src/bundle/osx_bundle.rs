@@ -49,13 +49,6 @@ pub fn bundle_project(settings: &bundle::Settings) -> Result<Vec<PathBuf>, Error
 
     create_info_plist(&bundle_directory, bundle_icon_file, settings)?;
     copy_frameworks_to_bundle(&bundle_directory, settings)?;
-
-    for src in settings.resource_files() {
-        let src = src?;
-        let dest = resources_dir.join(file::resource_relpath(&src));
-        file::copy(&src, &dest)?;
-    }
-
     copy_binary_to_bundle(&bundle_directory, settings)?;
 
     Ok(vec![app_bundle_path])

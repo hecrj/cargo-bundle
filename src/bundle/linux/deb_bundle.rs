@@ -64,7 +64,6 @@ pub fn bundle_project(settings: &bundle::Settings) -> Result<Vec<PathBuf>, Error
     let binary_dest = data_dir.join("usr/bin").join(settings.binary_name());
     file::copy(settings.binary_path(), &binary_dest)?;
 
-    transfer_resource_files(settings, &data_dir)?;
     generate_icon_files(settings, &data_dir)?;
     generate_desktop_file(settings, &data_dir)?;
 
@@ -166,21 +165,6 @@ fn generate_md5sums(control_dir: &Path, data_dir: &Path) -> Result<(), Error> {
         })?;
         writeln!(md5sums_file, "  {path_str}")?;
     }
-    Ok(())
-}
-
-/// Copy the bundle's resource files into an appropriate directory under the
-/// `data_dir`.
-fn transfer_resource_files(settings: &bundle::Settings, data_dir: &Path) -> Result<(), Error> {
-    let resource_dir = data_dir.join("usr/lib").join(settings.binary_name());
-
-    for src in settings.resource_files() {
-        let src = src?;
-        let dest = resource_dir.join(file::resource_relpath(&src));
-
-        file::copy(&src, &dest)?;
-    }
-
     Ok(())
 }
 

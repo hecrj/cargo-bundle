@@ -351,15 +351,6 @@ impl Settings {
         }
     }
 
-    /// Returns an iterator over the resource files to be included in this
-    /// bundle.
-    pub fn resource_files(&self) -> ResourcePaths {
-        match self.bundle_settings.resources {
-            Some(ref paths) => ResourcePaths::new(paths.as_slice(), true),
-            None => ResourcePaths::new(&[], true),
-        }
-    }
-
     pub fn version_string(&self) -> &dyn Display {
         match self.bundle_settings.version.as_ref() {
             Some(v) => v,
@@ -458,7 +449,6 @@ struct Metadata {
     identifier: Option<String>,
     icon: Option<Vec<String>>,
     version: Option<String>,
-    resources: Option<Vec<String>>,
     copyright: Option<String>,
     category: Option<Category>,
     short_description: Option<String>,
@@ -603,10 +593,6 @@ mod tests {
         assert_eq!(bundle.identifier, Some("com.example.app".to_string()));
         assert_eq!(bundle.icon, None);
         assert_eq!(bundle.version, None);
-        assert_eq!(
-            bundle.resources,
-            Some(vec!["data".to_string(), "foo/bar".to_string()])
-        );
         assert_eq!(bundle.category, Some(Category::PuzzleGame));
         assert_eq!(
             bundle.long_description,

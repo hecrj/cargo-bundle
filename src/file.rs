@@ -2,7 +2,7 @@ use crate::Error;
 
 use std::fs::{self, File};
 use std::io::{self, BufWriter};
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 /// Creates a new file at the given path, creating any parent directories as
 /// needed.
@@ -84,28 +84,9 @@ pub fn copy_dir(from: &Path, to: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-/// Given a path (absolute or relative) to a resource file, returns the
-/// relative path from the bundle resources directory where that resource
-/// should be stored.
-pub fn resource_relpath(path: &Path) -> PathBuf {
-    let mut dest = PathBuf::new();
-
-    for component in path.components() {
-        match component {
-            Component::Prefix(_) => {}
-            Component::RootDir => dest.push("_root_"),
-            Component::CurDir => {}
-            Component::ParentDir => dest.push("_up_"),
-            Component::Normal(string) => dest.push(string),
-        }
-    }
-
-    dest
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{copy_dir, create, resource_relpath, symlink};
+    use super::create;
 
     use std::io::Write;
     use std::path::PathBuf;
@@ -135,7 +116,7 @@ mod tests {
             let mut file = create(&tmp.path().join("orig/sub/file.txt")).unwrap();
             writeln!(file, "Hello, world!").unwrap();
         }
-        symlink(
+        super::symlink(
             &PathBuf::from("sub/file.txt"),
             &tmp.path().join("orig/link"),
         )
@@ -148,7 +129,7 @@ mod tests {
         );
         // Copy ${TMP}/orig to ${TMP}/parent/copy, and make sure that the
         // directory structure, file, and symlink got copied correctly.
-        copy_dir(&tmp.path().join("orig"), &tmp.path().join("parent/copy")).unwrap();
+        super::copy_dir(&tmp.path().join("orig"), &tmp.path().join("parent/copy")).unwrap();
         assert!(tmp.path().join("parent/copy").is_dir());
         assert!(tmp.path().join("parent/copy/sub").is_dir());
         assert!(tmp.path().join("parent/copy/sub/file.txt").is_file());
@@ -168,22 +149,6 @@ mod tests {
                 .unwrap()
                 .as_slice(),
             b"Hello, world!\n"
-        );
-    }
-
-    #[test]
-    fn resource_relative_paths() {
-        assert_eq!(
-            resource_relpath(&PathBuf::from("./data/images/button.png")),
-            PathBuf::from("data/images/button.png")
-        );
-        assert_eq!(
-            resource_relpath(&PathBuf::from("../../images/wheel.png")),
-            PathBuf::from("_up_/_up_/images/wheel.png")
-        );
-        assert_eq!(
-            resource_relpath(&PathBuf::from("/home/ferris/crab.png")),
-            PathBuf::from("_root_/home/ferris/crab.png")
         );
     }
 }
