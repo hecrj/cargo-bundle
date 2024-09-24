@@ -18,23 +18,20 @@
 // metadata, as well as generating the md5sums file.  Currently we do not
 // generate postinst or prerm files.
 
-use crate::{
-    bundle::{
-        common,
-        linux::common::{
-            create_file_with_data, generate_desktop_file, generate_icon_files, generate_md5sum,
-            tar_and_gzip_dir, total_dir_size,
-        },
-        Settings,
-    },
-    ResultExt,
+use crate::bundle;
+use crate::bundle::linux::{
+    create_file_with_data, generate_desktop_file, generate_icon_files, generate_md5sum,
+    tar_and_gzip_dir, total_dir_size,
 };
+use crate::file;
+use crate::terminal;
+use crate::Error;
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
+pub fn bundle_project(settings: &bundle::Settings) -> Result<Vec<PathBuf>, Error> {
     let arch = match settings.binary_arch() {
         "x86" => "i386",
         "x86_64" => "amd64",
@@ -42,66 +39,67 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
         "aarch64" => "arm64",
         other => other,
     };
+
     let package_base_name = format!(
         "{}_{}_{}",
         settings.binary_name(),
         settings.version_string(),
         arch
     );
+
     let package_name = format!("{package_base_name}.deb");
-    common::print_bundling(&package_name)?;
     let base_dir = settings.project_out_directory().join("bundle/deb");
     let package_dir = base_dir.join(&package_base_name);
+
+    terminal::print_bundling(&package_name)?;
+
     if package_dir.exists() {
-        std::fs::remove_dir_all(&package_dir)
-            .chain_err(|| format!("Failed to remove old {package_base_name}"))?;
+        std::fs::remove_dir_all(&package_dir)?;
     }
+
     let package_path = base_dir.join(package_name);
 
     // Generate data files.
     let data_dir = package_dir.join("data");
     let binary_dest = data_dir.join("usr/bin").join(settings.binary_name());
-    common::copy_file(settings.binary_path(), &binary_dest)
-        .chain_err(|| "Failed to copy binary file")?;
-    transfer_resource_files(settings, &data_dir).chain_err(|| "Failed to copy resource files")?;
-    generate_icon_files(settings, &data_dir).chain_err(|| "Failed to create icon files")?;
-    generate_desktop_file(settings, &data_dir).chain_err(|| "Failed to create desktop file")?;
+    file::copy(settings.binary_path(), &binary_dest)?;
+
+    transfer_resource_files(settings, &data_dir)?;
+    generate_icon_files(settings, &data_dir)?;
+    generate_desktop_file(settings, &data_dir)?;
 
     // Generate control files.
     let control_dir = package_dir.join("control");
-    generate_control_file(settings, arch, &control_dir, &data_dir)
-        .chain_err(|| "Failed to create control file")?;
-    generate_md5sums(&control_dir, &data_dir).chain_err(|| "Failed to create md5sums file")?;
+    generate_control_file(settings, arch, &control_dir, &data_dir)?;
+    generate_md5sums(&control_dir, &data_dir)?;
 
     // Generate `debian-binary` file; see
     // http://www.tldp.org/HOWTO/Debian-Binary-Package-Building-HOWTO/x60.html#AEN66
     let debian_binary_path = package_dir.join("debian-binary");
-    create_file_with_data(&debian_binary_path, "2.0\n")
-        .chain_err(|| "Failed to create debian-binary file")?;
+    create_file_with_data(&debian_binary_path, "2.0\n")?;
 
     // Apply tar/gzip/ar to create the final package file.
-    let control_tar_gz_path =
-        tar_and_gzip_dir(control_dir).chain_err(|| "Failed to tar/gzip control directory")?;
-    let data_tar_gz_path =
-        tar_and_gzip_dir(data_dir).chain_err(|| "Failed to tar/gzip data directory")?;
+    let control_tar_gz_path = tar_and_gzip_dir(control_dir)?;
+    let data_tar_gz_path = tar_and_gzip_dir(data_dir)?;
+
     create_archive(
         vec![debian_binary_path, control_tar_gz_path, data_tar_gz_path],
         &package_path,
-    )
-    .chain_err(|| "Failed to create package archive")?;
+    )?;
+
     Ok(vec![package_path])
 }
 
 fn generate_control_file(
-    settings: &Settings,
+    settings: &bundle::Settings,
     arch: &str,
     control_dir: &Path,
     data_dir: &Path,
-) -> crate::Result<()> {
+) -> Result<(), Error> {
     // For more information about the format of this file, see
     // https://www.debian.org/doc/debian-policy/ch-controlfields.html
     let dest_path = control_dir.join("control");
-    let mut file = common::create_file(&dest_path)?;
+    let mut file = file::create(&dest_path)?;
     writeln!(
         &mut file,
         "Package: {}",
@@ -148,9 +146,10 @@ fn generate_control_file(
 
 /// Create an `md5sums` file in the `control_dir` containing the MD5 checksums
 /// for each file within the `data_dir`.
-fn generate_md5sums(control_dir: &Path, data_dir: &Path) -> crate::Result<()> {
+fn generate_md5sums(control_dir: &Path, data_dir: &Path) -> Result<(), Error> {
     let md5sums_path = control_dir.join("md5sums");
-    let mut md5sums_file = common::create_file(&md5sums_path)?;
+    let mut md5sums_file = file::create(&md5sums_path)?;
+
     for entry in WalkDir::new(data_dir) {
         let entry = entry?;
         let path = entry.path();
@@ -172,24 +171,28 @@ fn generate_md5sums(control_dir: &Path, data_dir: &Path) -> crate::Result<()> {
 
 /// Copy the bundle's resource files into an appropriate directory under the
 /// `data_dir`.
-fn transfer_resource_files(settings: &Settings, data_dir: &Path) -> crate::Result<()> {
+fn transfer_resource_files(settings: &bundle::Settings, data_dir: &Path) -> Result<(), Error> {
     let resource_dir = data_dir.join("usr/lib").join(settings.binary_name());
+
     for src in settings.resource_files() {
         let src = src?;
-        let dest = resource_dir.join(common::resource_relpath(&src));
-        common::copy_file(&src, &dest)
-            .chain_err(|| format!("Failed to copy resource file {src:?}"))?;
+        let dest = resource_dir.join(file::resource_relpath(&src));
+
+        file::copy(&src, &dest)?;
     }
+
     Ok(())
 }
 
 /// Creates an `ar` archive from the given source files and writes it to the
 /// given destination path.
-fn create_archive(srcs: Vec<PathBuf>, dest: &Path) -> crate::Result<()> {
-    let mut builder = ar::Builder::new(common::create_file(dest)?);
+fn create_archive(srcs: Vec<PathBuf>, dest: &Path) -> Result<(), Error> {
+    let mut builder = ar::Builder::new(file::create(dest)?);
+
     for path in &srcs {
         builder.append_path(path)?;
     }
+
     builder.into_inner()?.flush()?;
     Ok(())
 }

@@ -1,8 +1,10 @@
-use super::category::AppCategory;
-use super::common::print_warning;
+use crate::terminal;
+use crate::{Category, Error};
+
 use clap::ArgMatches;
 
 use cargo_metadata::{Metadata, MetadataCommand};
+use serde::Deserialize;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -14,21 +16,16 @@ use target_build_utils::TargetInfo;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PackageType {
     OsxBundle,
-    IosBundle,
     WindowsMsi,
     Deb,
-    Rpm,
 }
 
 impl PackageType {
     pub fn from_short_name(name: &str) -> Option<PackageType> {
-        // Other types we may eventually want to support: apk
         match name {
             "deb" => Some(PackageType::Deb),
-            "ios" => Some(PackageType::IosBundle),
             "msi" => Some(PackageType::WindowsMsi),
             "osx" => Some(PackageType::OsxBundle),
-            "rpm" => Some(PackageType::Rpm),
             _ => None,
         }
     }
@@ -36,10 +33,8 @@ impl PackageType {
     pub fn short_name(&self) -> &'static str {
         match *self {
             PackageType::Deb => "deb",
-            PackageType::IosBundle => "ios",
             PackageType::WindowsMsi => "msi",
             PackageType::OsxBundle => "osx",
-            PackageType::Rpm => "rpm",
         }
     }
 
@@ -50,10 +45,8 @@ impl PackageType {
 
 const ALL_PACKAGE_TYPES: &[PackageType] = &[
     PackageType::Deb,
-    PackageType::IosBundle,
     PackageType::WindowsMsi,
     PackageType::OsxBundle,
-    PackageType::Rpm,
 ];
 
 #[derive(Clone, Debug)]
@@ -72,7 +65,7 @@ struct BundleSettings {
     version: Option<String>,
     resources: Option<Vec<String>>,
     copyright: Option<String>,
-    category: Option<AppCategory>,
+    category: Option<Category>,
     short_description: Option<String>,
     long_description: Option<String>,
     // OS-specific settings:
@@ -105,7 +98,7 @@ pub struct Settings {
 }
 
 /// Try to load `Cargo.toml` file in the specified directory
-fn load_metadata(dir: &Path) -> crate::Result<Metadata> {
+fn load_metadata(dir: &Path) -> Result<Metadata, Error> {
     let cargo_file_path = dir.join("Cargo.toml");
     Ok(MetadataCommand::new()
         .manifest_path(cargo_file_path)
@@ -113,7 +106,7 @@ fn load_metadata(dir: &Path) -> crate::Result<Metadata> {
 }
 
 impl Settings {
-    pub fn new(current_dir: PathBuf, matches: &ArgMatches) -> crate::Result<Self> {
+    pub fn new(current_dir: PathBuf, matches: &ArgMatches) -> Result<Self, Error> {
         let package_type = match matches.value_of("format") {
             Some(name) => match PackageType::from_short_name(name) {
                 Some(package_type) => Some(package_type),
@@ -121,6 +114,7 @@ impl Settings {
             },
             None => None,
         };
+
         let build_artifact = if let Some(bin) = matches.value_of("bin") {
             BuildArtifact::Bin(bin.to_string())
         } else if let Some(example) = matches.value_of("example") {
@@ -128,6 +122,7 @@ impl Settings {
         } else {
             BuildArtifact::Main
         };
+
         let profile = if matches.is_present("release") {
             "release".to_string()
         } else if let Some(profile) = matches.value_of("profile") {
@@ -138,12 +133,14 @@ impl Settings {
         } else {
             "dev".to_string()
         };
+
         let all_features = matches.is_present("all-features");
         let no_default_features = matches.is_present("no-default-features");
         let target = match matches.value_of("target") {
             Some(triple) => Some((triple.to_string(), TargetInfo::from_str(triple)?)),
             None => None,
         };
+
         let features = matches.value_of("features").map(|features| features.into());
         // TODO: support multiple packages?
         let (bundle_settings, package) =
@@ -160,7 +157,7 @@ impl Settings {
                 {
                     (bundle_settings, target.name.clone())
                 } else {
-                    bail!("No `bin` target is found in package '{}'", package.name)
+                    Err(Error::NoBinTargetFound(package.name.clone()))?
                 }
             }
             BuildArtifact::Bin(ref name) => (
@@ -172,18 +169,18 @@ impl Settings {
                 name.clone(),
             ),
         };
+
         let binary_extension = match package_type {
             Some(x) => match x {
-                PackageType::OsxBundle
-                | PackageType::IosBundle
-                | PackageType::Deb
-                | PackageType::Rpm => "",
+                PackageType::OsxBundle | PackageType::Deb => "",
                 PackageType::WindowsMsi => ".exe",
             },
             None => "",
         };
+
         binary_name += binary_extension;
         let binary_path = target_dir.join(&binary_name);
+
         Ok(Settings {
             package,
             package_type,
@@ -267,7 +264,7 @@ impl Settings {
 
     fn find_bundle_package(
         metadata: Metadata,
-    ) -> crate::Result<(BundleSettings, cargo_metadata::Package)> {
+    ) -> Result<(BundleSettings, cargo_metadata::Package), Error> {
         for package_id in metadata.workspace_members.iter() {
             let package = &metadata[package_id];
             if let Some(bundle) = package.metadata.get("bundle") {
@@ -275,11 +272,13 @@ impl Settings {
                 return Ok((settings, package.clone()));
             }
         }
+
         print_warning("No package in workspace has [package.metadata.bundle] section")?;
+
         if let Some(root_package) = metadata.root_package() {
             Ok((BundleSettings::default(), root_package.clone()))
         } else {
-            bail!("unable to find root package")
+            Err(Error::RootPackageNotFound)
         }
     }
 
@@ -313,7 +312,7 @@ impl Settings {
     /// command-line, returns the native package type(s) for that target;
     /// otherwise, returns the native package type(s) for the host platform.
     /// Fails if the host/target's native package type is not supported.
-    pub fn package_types(&self) -> crate::Result<Vec<PackageType>> {
+    pub fn package_types(&self) -> Result<Vec<PackageType>, Error> {
         if let Some(package_type) = self.package_type {
             Ok(vec![package_type])
         } else {
@@ -322,12 +321,12 @@ impl Settings {
             } else {
                 std::env::consts::OS
             };
+
             match target_os {
                 "macos" => Ok(vec![PackageType::OsxBundle]),
-                "ios" => Ok(vec![PackageType::IosBundle]),
-                "linux" => Ok(vec![PackageType::Deb]), // TODO: Do Rpm too, once it's implemented.
+                "linux" => Ok(vec![PackageType::Deb]),
                 "windows" => Ok(vec![PackageType::WindowsMsi]),
-                os => bail!("Native {} bundles not yet supported.", os),
+                os => Err(Error::OSNotSupported(os.to_owned())),
             }
         }
     }
@@ -434,7 +433,7 @@ impl Settings {
         self.package.homepage.as_deref().unwrap_or("")
     }
 
-    pub fn app_category(&self) -> Option<AppCategory> {
+    pub fn app_category(&self) -> Option<Category> {
         self.bundle_settings.category
     }
 
@@ -578,7 +577,7 @@ impl<'a> Iterator for ResourcePaths<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppCategory, BundleSettings};
+    use super::{BundleSettings, Category};
 
     #[test]
     fn parse_cargo_toml() {
@@ -600,7 +599,7 @@ mod tests {
             bundle.resources,
             Some(vec!["data".to_string(), "foo/bar".to_string()])
         );
-        assert_eq!(bundle.category, Some(AppCategory::PuzzleGame));
+        assert_eq!(bundle.category, Some(Category::PuzzleGame));
         assert_eq!(
             bundle.long_description,
             Some(

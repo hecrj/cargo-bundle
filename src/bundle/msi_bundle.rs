@@ -1,6 +1,7 @@
-use super::common;
-use super::settings::Settings;
-use crate::ResultExt;
+use crate::bundle;
+use crate::file;
+use crate::terminal;
+use crate::Error;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsStr;
@@ -64,55 +65,41 @@ struct CabinetInfo {
     resources: Vec<ResourceInfo>,
 }
 
-pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
-    common::print_warning("MSI bundle support is still experimental.")?;
+pub fn bundle_project(settings: &bundle::Settings) -> Result<Vec<PathBuf>, Error> {
+    terminal::print_warning("MSI bundle support is still experimental.")?;
 
     let msi_name = format!("{}.msi", settings.bundle_name());
-    common::print_bundling(&msi_name)?;
+    terminal::print_bundling(&msi_name)?;
+
     let base_dir = settings.project_out_directory().join("bundle/msi");
     let msi_path = base_dir.join(&msi_name);
-    let mut package =
-        new_empty_package(&msi_path).chain_err(|| "Failed to initialize MSI package")?;
+    let mut package = new_empty_package(&msi_path)?;
 
     // Generate package metadata:
     let guid = generate_package_guid(settings);
     set_summary_info(&mut package, guid, settings);
-    create_property_table(&mut package, guid, settings)
-        .chain_err(|| "Failed to generate Property table")?;
+    create_property_table(&mut package, guid, settings)?;
 
     // Copy resource files into package:
-    let mut resources = collect_resource_info(settings)
-        .chain_err(|| "Failed to collect resource file information")?;
-    let directories = collect_directory_info(settings, &mut resources)
-        .chain_err(|| "Failed to collect resource directory information")?;
+    let mut resources = collect_resource_info(settings)?;
+    let directories = collect_directory_info(settings, &mut resources)?;
     let cabinets = divide_resources_into_cabinets(resources);
-    generate_resource_cabinets(&mut package, &cabinets)
-        .chain_err(|| "Failed to generate resource cabinets")?;
+    generate_resource_cabinets(&mut package, &cabinets)?;
 
     // Set up installer database tables:
-    create_directory_table(&mut package, &directories)
-        .chain_err(|| "Failed to generate Directory table")?;
-    create_feature_table(&mut package, settings)
-        .chain_err(|| "Failed to generate Feature table")?;
-    create_component_table(&mut package, guid, &directories)
-        .chain_err(|| "Failed to generate Component table")?;
-    create_feature_components_table(&mut package, &directories)
-        .chain_err(|| "Failed to generate FeatureComponents table")?;
-    create_media_table(&mut package, &cabinets).chain_err(|| "Failed to generate Media table")?;
-    create_file_table(&mut package, &cabinets).chain_err(|| "Failed to generate File table")?;
-    create_install_execute_sequence_table(&mut package, &cabinets)
-        .chain_err(|| "Failed to generate InstallExecuteSequence table")?;
-    create_install_ui_sequence_table(&mut package, &cabinets)
-        .chain_err(|| "Failed to generate InstallUISequence table")?;
-    create_dialog_table(&mut package, &cabinets).chain_err(|| "Failed to generate Dialog table")?;
-    create_control_table(&mut package, &cabinets)
-        .chain_err(|| "Failed to generate Control table")?;
-    create_control_event_table(&mut package, &cabinets)
-        .chain_err(|| "Failed to generate ControlEvent table")?;
-    create_event_mapping_table(&mut package, &cabinets)
-        .chain_err(|| "Failed to generate EventMapping table")?;
-    create_text_style_table(&mut package, &cabinets)
-        .chain_err(|| "Failed to generate TextStyle table")?;
+    create_directory_table(&mut package, &directories)?;
+    create_feature_table(&mut package, settings)?;
+    create_component_table(&mut package, guid, &directories)?;
+    create_feature_components_table(&mut package, &directories)?;
+    create_media_table(&mut package, &cabinets)?;
+    create_file_table(&mut package, &cabinets)?;
+    create_install_execute_sequence_table(&mut package, &cabinets)?;
+    create_install_ui_sequence_table(&mut package, &cabinets)?;
+    create_dialog_table(&mut package, &cabinets)?;
+    create_control_table(&mut package, &cabinets)?;
+    create_control_event_table(&mut package, &cabinets)?;
+    create_event_mapping_table(&mut package, &cabinets)?;
+    create_text_style_table(&mut package, &cabinets)?;
     // TODO: Create other needed tables.
 
     // Create app icon:
@@ -137,39 +124,41 @@ pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
     Ok(vec![msi_path])
 }
 
-fn new_empty_package(msi_path: &Path) -> crate::Result<Package> {
+fn new_empty_package(msi_path: &Path) -> Result<Package, Error> {
     if let Some(parent) = msi_path.parent() {
-        fs::create_dir_all(parent)
-            .chain_err(|| format!("Failed to create directory {parent:?}"))?;
+        fs::create_dir_all(parent)?;
     }
+
     let msi_file = fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(true)
-        .open(msi_path)
-        .chain_err(|| format!("Failed to create file {msi_path:?}"))?;
+        .open(msi_path)?;
+
     let package = msi::Package::create(msi::PackageType::Installer, msi_file)?;
     Ok(package)
 }
 
 // Generates a GUID for the package, based on `settings.bundle_identifier()`.
-fn generate_package_guid(settings: &Settings) -> Uuid {
+fn generate_package_guid(settings: &bundle::Settings) -> Uuid {
     let namespace = Uuid::from_bytes(UUID_NAMESPACE);
     Uuid::new_v5(&namespace, settings.bundle_identifier().as_bytes())
 }
 
 // Populates the summary metadata for the package from the bundle settings.
-fn set_summary_info(package: &mut Package, package_guid: Uuid, settings: &Settings) {
+fn set_summary_info(package: &mut Package, package_guid: Uuid, settings: &bundle::Settings) {
     let summary_info = package.summary_info_mut();
     summary_info.set_creation_time_to_now();
     summary_info.set_subject(settings.bundle_name().to_string());
     summary_info.set_uuid(package_guid);
     summary_info.set_comments(settings.short_description().to_string());
+
     if let Some(authors) = settings.authors_comma_separated() {
         summary_info.set_author(authors);
     }
-    let creating_app = format!("cargo-bundle v{}", crate_version!());
+
+    let creating_app = format!("cargo-bundle v{}", env!("CARGO_PKG_VERSION"));
     summary_info.set_creating_application(creating_app);
     summary_info.set_word_count(2);
 }
@@ -178,8 +167,8 @@ fn set_summary_info(package: &mut Package, package_guid: Uuid, settings: &Settin
 fn create_property_table(
     package: &mut Package,
     package_guid: Uuid,
-    settings: &Settings,
-) -> crate::Result<()> {
+    settings: &bundle::Settings,
+) -> Result<(), Error> {
     let authors = settings.authors_comma_separated().unwrap_or_default();
     package.create_table(
         "Property",
@@ -237,7 +226,7 @@ fn create_property_table(
 
 // Returns a list of `ResourceInfo` structs for the binary executable and all
 // the resource files that should be included in the package.
-fn collect_resource_info(settings: &Settings) -> crate::Result<Vec<ResourceInfo>> {
+fn collect_resource_info(settings: &bundle::Settings) -> Result<Vec<ResourceInfo>, Error> {
     let mut resources = Vec::<ResourceInfo>::new();
     resources.push(ResourceInfo {
         source_path: settings.binary_path().to_path_buf(),
@@ -251,7 +240,7 @@ fn collect_resource_info(settings: &Settings) -> crate::Result<Vec<ResourceInfo>
         let source_path = source_path?;
         let metadata = source_path.metadata()?;
         let size = metadata.len();
-        let dest_path = root_rsrc_dir.join(common::resource_relpath(&source_path));
+        let dest_path = root_rsrc_dir.join(file::resource_relpath(&source_path));
         let filename = dest_path.file_name().unwrap().to_string_lossy().to_string();
         let info = ResourceInfo {
             source_path,
@@ -271,9 +260,9 @@ fn collect_resource_info(settings: &Settings) -> crate::Result<Vec<ResourceInfo>
 // with the database key of the Component that the resource will be associated
 // with.
 fn collect_directory_info(
-    settings: &Settings,
+    settings: &bundle::Settings,
     resources: &mut [ResourceInfo],
-) -> crate::Result<Vec<DirectoryInfo>> {
+) -> Result<Vec<DirectoryInfo>, Error> {
     let mut dir_map = BTreeMap::<PathBuf, DirectoryInfo>::new();
     let mut dir_index: i32 = 0;
     dir_map.insert(
@@ -356,7 +345,7 @@ fn divide_resources_into_cabinets(mut resources: Vec<ResourceInfo>) -> Vec<Cabin
 fn generate_resource_cabinets(
     package: &mut Package,
     cabinets: &[CabinetInfo],
-) -> crate::Result<()> {
+) -> Result<(), Error> {
     for cabinet_info in cabinets.iter() {
         let mut builder = cab::CabinetBuilder::new();
         let mut file_map = HashMap::<String, &Path>::new();
@@ -392,7 +381,7 @@ fn generate_resource_cabinets(
 fn create_directory_table(
     package: &mut Package,
     directories: &[DirectoryInfo],
-) -> crate::Result<()> {
+) -> Result<(), Error> {
     package.create_table(
         "Directory",
         vec![
@@ -433,7 +422,7 @@ fn create_directory_table(
 
 // Creates and populates the `Feature` database table for the package.  The
 // package will have a single main feature that installs everything.
-fn create_feature_table(package: &mut Package, settings: &Settings) -> crate::Result<()> {
+fn create_feature_table(package: &mut Package, settings: &bundle::Settings) -> Result<(), Error> {
     package.create_table(
         "Feature",
         vec![
@@ -477,7 +466,7 @@ fn create_component_table(
     package: &mut Package,
     package_guid: Uuid,
     directories: &[DirectoryInfo],
-) -> crate::Result<()> {
+) -> Result<(), Error> {
     package.create_table(
         "Component",
         vec![
@@ -522,7 +511,7 @@ fn create_component_table(
 fn create_feature_components_table(
     package: &mut Package,
     directories: &[DirectoryInfo],
-) -> crate::Result<()> {
+) -> Result<(), Error> {
     package.create_table(
         "FeatureComponents",
         vec![
@@ -551,7 +540,7 @@ fn create_feature_components_table(
 
 // Creates and populates the `Media` database table for the package, with one
 // entry for each CAB archive within the package.
-fn create_media_table(package: &mut Package, cabinets: &[CabinetInfo]) -> crate::Result<()> {
+fn create_media_table(package: &mut Package, cabinets: &[CabinetInfo]) -> Result<(), Error> {
     package.create_table(
         "Media",
         vec![
@@ -594,7 +583,7 @@ fn create_media_table(package: &mut Package, cabinets: &[CabinetInfo]) -> crate:
 // Creates and populates the `File` database table for the package, with one
 // entry for each resource file to be installed (including the main
 // executable).
-fn create_file_table(package: &mut Package, cabinets: &[CabinetInfo]) -> crate::Result<()> {
+fn create_file_table(package: &mut Package, cabinets: &[CabinetInfo]) -> Result<(), Error> {
     package.create_table(
         "File",
         vec![
@@ -645,7 +634,7 @@ fn create_file_table(package: &mut Package, cabinets: &[CabinetInfo]) -> crate::
 fn create_install_execute_sequence_table(
     package: &mut Package,
     _cabinets: &[CabinetInfo],
-) -> crate::Result<()> {
+) -> Result<(), Error> {
     package.create_table(
         "InstallExecuteSequence",
         vec![
@@ -744,7 +733,7 @@ fn create_install_execute_sequence_table(
 fn create_install_ui_sequence_table(
     package: &mut Package,
     _cabinets: &[CabinetInfo],
-) -> crate::Result<()> {
+) -> Result<(), Error> {
     package.create_table(
         "InstallUISequence",
         vec![
@@ -792,7 +781,7 @@ fn create_install_ui_sequence_table(
     Ok(())
 }
 
-fn create_dialog_table(package: &mut Package, _cabinets: &[CabinetInfo]) -> crate::Result<()> {
+fn create_dialog_table(package: &mut Package, _cabinets: &[CabinetInfo]) -> Result<(), Error> {
     package.create_table(
         "Dialog",
         vec![
@@ -870,7 +859,7 @@ fn create_dialog_table(package: &mut Package, _cabinets: &[CabinetInfo]) -> crat
     Ok(())
 }
 
-fn create_control_table(package: &mut Package, _cabinets: &[CabinetInfo]) -> crate::Result<()> {
+fn create_control_table(package: &mut Package, _cabinets: &[CabinetInfo]) -> Result<(), Error> {
     package.create_table(
         "Control",
         vec![
@@ -1008,7 +997,7 @@ fn create_control_table(package: &mut Package, _cabinets: &[CabinetInfo]) -> cra
 fn create_control_event_table(
     package: &mut Package,
     _cabinets: &[CabinetInfo],
-) -> crate::Result<()> {
+) -> Result<(), Error> {
     package.create_table(
         "ControlEvent",
         vec![
@@ -1074,7 +1063,7 @@ fn create_control_event_table(
 fn create_event_mapping_table(
     package: &mut Package,
     _cabinets: &[CabinetInfo],
-) -> crate::Result<()> {
+) -> Result<(), Error> {
     package.create_table(
         "EventMapping",
         vec![
@@ -1109,7 +1098,7 @@ fn create_event_mapping_table(
     Ok(())
 }
 
-fn create_text_style_table(package: &mut Package, _cabinets: &[CabinetInfo]) -> crate::Result<()> {
+fn create_text_style_table(package: &mut Package, _cabinets: &[CabinetInfo]) -> Result<(), Error> {
     package.create_table(
         "TextStyle",
         vec![
@@ -1147,7 +1136,7 @@ fn create_text_style_table(package: &mut Package, _cabinets: &[CabinetInfo]) -> 
     Ok(())
 }
 
-fn create_app_icon<W: Write>(writer: &mut W, settings: &Settings) -> crate::Result<()> {
+fn create_app_icon<W: Write>(writer: &mut W, settings: &bundle::Settings) -> Result<(), Error> {
     // Prefer ICO files.
     for icon_path in settings.icon_files() {
         let icon_path = icon_path?;

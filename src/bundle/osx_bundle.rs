@@ -16,60 +16,57 @@
 //
 // Currently, cargo-bundle does not support Frameworks, nor does it support placing arbitrary
 // files into the `Contents` directory of the bundle.
+use crate::bundle;
+use crate::file;
+use crate::image;
+use crate::terminal;
+use crate::Error;
 
-use super::common;
-use crate::{ResultExt, Settings};
-
-use image::{self, GenericImage};
+use ::image::GenericImage;
 use std::cmp::min;
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::prelude::*;
-use std::io::{self, BufWriter};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-pub fn bundle_project(settings: &Settings) -> crate::Result<Vec<PathBuf>> {
+pub fn bundle_project(settings: &bundle::Settings) -> Result<Vec<PathBuf>, Error> {
     let app_bundle_name = format!("{}.app", settings.bundle_name());
-    common::print_bundling(&app_bundle_name)?;
+    terminal::print_bundling(&app_bundle_name)?;
+
     let app_bundle_path = settings
         .project_out_directory()
         .join("bundle/osx")
         .join(&app_bundle_name);
     if app_bundle_path.exists() {
-        fs::remove_dir_all(&app_bundle_path)
-            .chain_err(|| format!("Failed to remove old {app_bundle_name}"))?;
+        fs::remove_dir_all(&app_bundle_path)?;
     }
+
     let bundle_directory = app_bundle_path.join("Contents");
-    fs::create_dir_all(&bundle_directory)
-        .chain_err(|| format!("Failed to create bundle directory at {bundle_directory:?}"))?;
+    fs::create_dir_all(&bundle_directory)?;
 
     let resources_dir = bundle_directory.join("Resources");
+    let bundle_icon_file = create_icns_file(&resources_dir, settings)?;
 
-    let bundle_icon_file: Option<PathBuf> =
-        { create_icns_file(&resources_dir, settings).chain_err(|| "Failed to create app icon")? };
-
-    create_info_plist(&bundle_directory, bundle_icon_file, settings)
-        .chain_err(|| "Failed to create Info.plist")?;
-
-    copy_frameworks_to_bundle(&bundle_directory, settings)
-        .chain_err(|| "Failed to bundle frameworks")?;
+    create_info_plist(&bundle_directory, bundle_icon_file, settings)?;
+    copy_frameworks_to_bundle(&bundle_directory, settings)?;
 
     for src in settings.resource_files() {
         let src = src?;
-        let dest = resources_dir.join(common::resource_relpath(&src));
-        common::copy_file(&src, &dest)
-            .chain_err(|| format!("Failed to copy resource file {src:?}"))?;
+        let dest = resources_dir.join(file::resource_relpath(&src));
+        file::copy(&src, &dest)?;
     }
 
-    copy_binary_to_bundle(&bundle_directory, settings)
-        .chain_err(|| format!("Failed to copy binary from {:?}", settings.binary_path()))?;
+    copy_binary_to_bundle(&bundle_directory, settings)?;
 
     Ok(vec![app_bundle_path])
 }
 
-fn copy_binary_to_bundle(bundle_directory: &Path, settings: &Settings) -> crate::Result<()> {
+fn copy_binary_to_bundle(
+    bundle_directory: &Path,
+    settings: &bundle::Settings,
+) -> Result<(), Error> {
     let dest_dir = bundle_directory.join("MacOS");
-    common::copy_file(
+    file::copy(
         settings.binary_path(),
         &dest_dir.join(settings.binary_name()),
     )
@@ -78,10 +75,10 @@ fn copy_binary_to_bundle(bundle_directory: &Path, settings: &Settings) -> crate:
 fn create_info_plist(
     bundle_dir: &Path,
     bundle_icon_file: Option<PathBuf>,
-    settings: &Settings,
-) -> crate::Result<()> {
+    settings: &bundle::Settings,
+) -> Result<(), Error> {
     let build_number = chrono::Utc::now().format("%Y%m%d.%H%M%S");
-    let file = &mut common::create_file(&bundle_dir.join("Info.plist"))?;
+    let file = &mut file::create(&bundle_dir.join("Info.plist"))?;
     write!(
         file,
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
@@ -194,37 +191,41 @@ fn create_info_plist(
     Ok(())
 }
 
-fn copy_framework_from(dest_dir: &Path, framework: &str, src_dir: &Path) -> crate::Result<bool> {
+fn copy_framework_from(dest_dir: &Path, framework: &str, src_dir: &Path) -> Result<bool, Error> {
     let src_name = format!("{framework}.framework");
     let src_path = src_dir.join(&src_name);
+
     if src_path.exists() {
-        common::copy_dir(&src_path, &dest_dir.join(&src_name))?;
+        file::copy_dir(&src_path, &dest_dir.join(&src_name))?;
         Ok(true)
     } else {
         Ok(false)
     }
 }
 
-fn copy_frameworks_to_bundle(bundle_directory: &Path, settings: &Settings) -> crate::Result<()> {
+fn copy_frameworks_to_bundle(
+    bundle_directory: &Path,
+    settings: &bundle::Settings,
+) -> Result<(), Error> {
     let frameworks = settings.osx_frameworks();
+
     if frameworks.is_empty() {
         return Ok(());
     }
+
     let dest_dir = bundle_directory.join("Frameworks");
-    fs::create_dir_all(bundle_directory)
-        .chain_err(|| format!("Failed to create Frameworks directory at {dest_dir:?}"))?;
+    fs::create_dir_all(bundle_directory)?;
+
     for framework in frameworks.iter() {
         if framework.ends_with(".framework") {
             let src_path = PathBuf::from(framework);
             let src_name = src_path.file_name().unwrap();
-            common::copy_dir(&src_path, &dest_dir.join(src_name))?;
+            file::copy(&src_path, &dest_dir.join(src_name))?;
             continue;
         } else if framework.contains('/') {
-            bail!(
-                "Framework path should have .framework extension: {}",
-                framework
-            );
+            return Err(Error::MacosFrameworkNotValid(framework.clone()));
         }
+
         if let Some(home_dir) = dirs::home_dir() {
             if copy_framework_from(&dest_dir, framework, &home_dir.join("Library/Frameworks/"))? {
                 continue;
@@ -244,8 +245,10 @@ fn copy_frameworks_to_bundle(bundle_directory: &Path, settings: &Settings) -> cr
         {
             continue;
         }
-        bail!("Could not locate {}.framework", framework);
+
+        return Err(Error::MacosFrameworkNotFound(framework.clone()));
     }
+
     Ok(())
 }
 
@@ -254,8 +257,8 @@ fn copy_frameworks_to_bundle(bundle_directory: &Path, settings: &Settings) -> cr
 /// were provided.
 fn create_icns_file(
     resources_dir: &PathBuf,
-    settings: &Settings,
-) -> crate::Result<Option<PathBuf>> {
+    settings: &bundle::Settings,
+) -> Result<Option<PathBuf>, Error> {
     if settings.icon_files().count() == 0 {
         return Ok(None);
     }
@@ -266,7 +269,7 @@ fn create_icns_file(
         if icon_path.extension() == Some(OsStr::new("icns")) {
             let mut dest_path = resources_dir.to_path_buf();
             dest_path.push(icon_path.file_name().unwrap());
-            common::copy_file(&icon_path, &dest_path)?;
+            file::copy(&icon_path, &dest_path)?;
             return Ok(Some(dest_path));
         }
     }
@@ -275,7 +278,7 @@ fn create_icns_file(
     let mut family = icns::IconFamily::new();
 
     fn add_icon_to_family(
-        icon: image::DynamicImage,
+        icon: ::image::DynamicImage,
         density: u32,
         family: &mut icns::IconFamily,
     ) -> io::Result<()> {
@@ -297,11 +300,11 @@ fn create_icns_file(
         }
     }
 
-    let mut images_to_resize: Vec<(image::DynamicImage, u32, u32)> = vec![];
+    let mut images_to_resize: Vec<(::image::DynamicImage, u32, u32)> = vec![];
     for icon_path in settings.icon_files() {
         let icon_path = icon_path?;
-        let icon = image::open(&icon_path)?;
-        let density = if common::is_retina(&icon_path) { 2 } else { 1 };
+        let icon = ::image::open(&icon_path)?;
+        let density = if image::is_retina(&icon_path) { 2 } else { 1 };
         let (w, h) = icon.dimensions();
         let orig_size = min(w, h);
         let next_size_down = 2f32.powf((orig_size as f32).log2().floor()) as u32;
@@ -313,7 +316,7 @@ fn create_icns_file(
     }
 
     for (icon, next_size_down, density) in images_to_resize {
-        let icon = icon.resize_exact(next_size_down, next_size_down, image::Lanczos3);
+        let icon = icon.resize_exact(next_size_down, next_size_down, ::image::Lanczos3);
         add_icon_to_family(icon, density, &mut family)?;
     }
 
@@ -327,20 +330,21 @@ fn create_icns_file(
         return Ok(Some(dest_path));
     }
 
-    bail!("No usable icon files found.");
+    Err(Error::UsableIconFilesNotFound)
 }
 
 /// Converts an image::DynamicImage into an icns::Image.
-fn make_icns_image(img: image::DynamicImage) -> io::Result<icns::Image> {
+fn make_icns_image(img: ::image::DynamicImage) -> io::Result<icns::Image> {
     let pixel_format = match img.color() {
-        image::ColorType::RGBA(8) => icns::PixelFormat::RGBA,
-        image::ColorType::RGB(8) => icns::PixelFormat::RGB,
-        image::ColorType::GrayA(8) => icns::PixelFormat::GrayAlpha,
-        image::ColorType::Gray(8) => icns::PixelFormat::Gray,
+        ::image::ColorType::RGBA(8) => icns::PixelFormat::RGBA,
+        ::image::ColorType::RGB(8) => icns::PixelFormat::RGB,
+        ::image::ColorType::GrayA(8) => icns::PixelFormat::GrayAlpha,
+        ::image::ColorType::Gray(8) => icns::PixelFormat::Gray,
         _ => {
             let msg = format!("unsupported ColorType: {:?}", img.color());
             return Err(io::Error::new(io::ErrorKind::InvalidData, msg));
         }
     };
+
     icns::Image::from_data(pixel_format, img.width(), img.height(), img.raw_pixels())
 }

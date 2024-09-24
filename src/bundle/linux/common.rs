@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 /// Generate the application desktop file and store it under the `data_dir`.
-pub fn generate_desktop_file(settings: &Settings, data_dir: &Path) -> crate::Result<()> {
+pub fn generate_desktop_file(settings: &Settings, data_dir: &Path) -> Result<(), Error> {
     let bin_name = settings.binary_name();
     let desktop_file_name = format!("{}.desktop", bin_name);
     let desktop_file_path = data_dir
