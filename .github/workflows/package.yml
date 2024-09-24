@@ -1,0 +1,20 @@
+name: Test
+on: push
+jobs:
+  all:
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: --deny warnings
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macOS-latest]
+    steps:
+    - uses: hecrj/setup-rust-action@v2
+      with:
+        rust-version: stable
+    - uses: actions/checkout@master
+    - name: Install `cargo-bundle`
+      run: cargo install --locked --path .
+    - name: Package binaries
+      run: |
+        cargo bundle --example hello
